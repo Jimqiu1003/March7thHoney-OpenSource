@@ -133,6 +133,14 @@ internal static class IntegrationChecks
             check(State() == selectionBefore, "invalid selection preserves state");
             check(manager.SetCharacterEventNonFeaturedPool(2001, 1, manager.GetGoldAvatars().Select(x => (uint)x)) == Retcode.RetSucc,
                 "valid selection accepted");
+            GameData.AvatarConfigData[4001] = new AvatarConfigExcel { AvatarID = 4001, MaxRank = 0,
+                Rarity = RarityEnum.CombatPowerAvatarRarityType5 };
+            var savedSelection = State();
+            check(await manager.SetCharacterEventNonFeaturedPoolAsync(2001, 1,
+                    manager.GetGoldAvatars().Skip(1).Select(id => (uint)id).Append(4001u)) == Retcode.RetGachaDecideItemIdInvalid,
+                "selection with unavailable reward rejected");
+            check(State() == savedSelection, "unavailable selection preserves state");
+            GameData.AvatarConfigData.Remove(4001);
             GameData.BannersConfig.Banners.Add(new BannerConfig { GachaId = 3001,
                 GachaType = GachaTypeEnum.CollaborationAvatarUp });
             var page = manager.ToProto();

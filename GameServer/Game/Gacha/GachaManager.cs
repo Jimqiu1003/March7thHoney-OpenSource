@@ -397,7 +397,7 @@ public class GachaManager : BasePlayerManager<GachaData>
             return Retcode.RetGachaDecideItemIdInvalid;
 
         var allowed = GetAllGoldAvatars().ToHashSet();
-        if (selected.Any(id => !allowed.Contains(id)))
+        if (selected.Any(id => !allowed.Contains(id) || !IsValidReward(id)))
             return Retcode.RetGachaDecideItemIdInvalid;
 
         Data.CharacterEventNonFeaturedPool = selected;
@@ -495,7 +495,9 @@ public class GachaManager : BasePlayerManager<GachaData>
                 _ => pools.GoldAvatars.Concat(pools.GoldWeapons).ToList()
             };
             var purple = pools.PurpleAvatars.Concat(pools.PurpleWeapons).ToList();
-            var candidates = gold.Concat(purple).Concat(pools.BlueWeapons)
+            var fallbackGold = banner.GachaType is GachaTypeEnum.AvatarUp or GachaTypeEnum.CollaborationAvatarUp
+                ? pools.GoldAvatars : [];
+            var candidates = gold.Concat(fallbackGold).Concat(purple).Concat(pools.BlueWeapons)
                 .Concat(banner.RateUpItems5).Concat(banner.RateUpItems4);
             if (gold.Count == 0 || purple.Count == 0 || pools.BlueWeapons.Count == 0 ||
                 candidates.Any(id => !IsValidReward(id))) continue;
