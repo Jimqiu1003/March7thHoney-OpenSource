@@ -6,6 +6,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Content Include="../../Config/Custom/Banners.json" Link="Fixtures/Banners.json" CopyToOutputDirectory="PreserveNewest" />
     <ProjectReference Include="../../Common/Common.csproj" />
     <ProjectReference Include="../../GameServer/GameServer.csproj" />
   </ItemGroup>

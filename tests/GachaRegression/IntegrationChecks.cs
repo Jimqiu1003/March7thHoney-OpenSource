@@ -234,7 +234,7 @@ internal static class IntegrationChecks
                 using var buffer = new MemoryStream();
                 gzip.CopyTo(buffer);
                 GameData.ApplySnapshot(MemoryPackSerializer.Deserialize<GameDataSnapshot>(buffer.ToArray())!);
-                var bannersFile = Path.Combine(Path.GetDirectoryName(resourceCache)!, "Custom", "Banners.json");
+                var bannersFile = Path.Combine(AppContext.BaseDirectory, "Fixtures", "Banners.json");
                 GameData.BannersConfig = new BannersConfig
                 {
                     Banners = JsonConvert.DeserializeObject<List<BannerConfig>>(File.ReadAllText(bannersFile))!
@@ -248,6 +248,52 @@ internal static class IntegrationChecks
                     "four-star page list excludes legacy five-star preview entries");
                 check(catalogPage.AKMDBPNEHDE.Count == active.Count(b => b.GachaType is
                     GachaTypeEnum.AvatarUp or GachaTypeEnum.CollaborationAvatarUp), "loaded catalog selection coverage");
+                // Target client group 31 has two fixed subgroups, not an arbitrary list of active banners.
+                int[] collaboration = [5003, 5004, 6003, 6004, 5001, 5002, 6001, 6002];
+                check(collaboration.All(id => catalogPage.GachaInfoList.Any(info => info.GachaId == id)),
+                    "CN 4.6 merge group supplies every fixed tab");
+                var oldOnly = GameData.BannersConfig.Banners.Where(b => b.GachaId is 5003 or 5004 or 6003 or 6004).ToList();
+                foreach (var omitted in oldOnly) GameData.BannersConfig.Banners.Remove(omitted);
+                var legacyPage = catalogManager.ToProto();
+                check(legacyPage.GachaInfoList.All(info => !collaboration.Contains((int)info.GachaId)),
+                    "legacy four-banner config cannot publish the client zero-of-two subgroup");
+                check(legacyPage.GachaInfoList.Any(info => info.GachaId == 1001), "legacy config retains standard initialization");
+                GameData.BannersConfig.Banners.AddRange(oldOnly);
+                foreach (var missing in collaboration)
+                {
+                    var omitted = GameData.BannersConfig.Banners.Single(b => b.GachaId == missing);
+                    GameData.BannersConfig.Banners.Remove(omitted);
+                    var beforePartial = State();
+                    var partialPage = catalogManager.ToProto();
+                    check(partialPage.GachaInfoList.All(info => !collaboration.Contains((int)info.GachaId)),
+                        "one missing merge member hides the entire broken group");
+                    check(partialPage.GachaInfoList.Any(info => info.GachaId == 1001), "partial merge keeps standard pool available");
+                    check((await catalogManager.DoGacha(5001, 1))!.Retcode == (uint)Retcode.RetGachaIdNotExist,
+                        "hidden incomplete group cannot consume tickets");
+                    check(State() == beforePartial, "incomplete group rejection preserves inventory and pity");
+                    GameData.BannersConfig.Banners.Add(omitted);
+                }
+                var member = GameData.BannersConfig.Banners.Single(b => b.GachaId == 5003);
+                var originalType = member.GachaType;
+                member.GachaType = GachaTypeEnum.AvatarUp;
+                check(catalogManager.ToProto().GachaInfoList.All(info => !collaboration.Contains((int)info.GachaId)),
+                    "wrong merge member type cannot initialize fixed avatar tabs");
+                member.GachaType = originalType;
+                var originalEnd = member.EndTime;
+                member.EndTime = 1;
+                check(catalogManager.ToProto().GachaInfoList.All(info => !collaboration.Contains((int)info.GachaId)),
+                    "expired merge member excludes incomplete group");
+                member.EndTime = originalEnd;
+                var originalFeatured = member.RateUpItems5;
+                member.RateUpItems5 = [999999];
+                check(catalogManager.ToProto().GachaInfoList.All(info => !collaboration.Contains((int)info.GachaId)),
+                    "missing reward resource excludes incomplete group");
+                member.RateUpItems5 = originalFeatured;
+                GameData.BannersConfig.Banners.Add(member);
+                check(catalogManager.ToProto().GachaInfoList.All(info => !collaboration.Contains((int)info.GachaId)),
+                    "ambiguous duplicate excludes incomplete group");
+                GameData.BannersConfig.Banners.Remove(member);
+                check(catalogManager.ToProto().GachaInfoList.Count == active.Count, "restored complete group restores page");
                 typeof(PlayerInstance).GetProperty(nameof(PlayerInstance.FriendRecordData))!.SetValue(player, new FriendRecordData());
                 inventory.Data.MaterialItems.RemoveAll(item => item.ItemId is 101 or 102);
                 inventory.Data.MaterialItems.AddRange(new[] { new ItemData { ItemId = 101, Count = 500 },

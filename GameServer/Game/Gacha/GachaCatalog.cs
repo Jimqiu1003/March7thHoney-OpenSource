@@ -7,6 +7,14 @@ namespace March7thHoney.GameServer.Game.Gacha;
 
 internal sealed class GachaCatalog
 {
+    // CN 4.6 group 31 renders two subgroups, each with two avatar and two weapon tabs.
+    private static readonly (int Id, GachaTypeEnum Type)[] CollaborationGroup =
+    [
+        (5003, GachaTypeEnum.CollaborationAvatarUp), (5004, GachaTypeEnum.CollaborationAvatarUp),
+        (6003, GachaTypeEnum.CollaborationWeaponUp), (6004, GachaTypeEnum.CollaborationWeaponUp),
+        (5001, GachaTypeEnum.CollaborationAvatarUp), (5002, GachaTypeEnum.CollaborationAvatarUp),
+        (6001, GachaTypeEnum.CollaborationWeaponUp), (6002, GachaTypeEnum.CollaborationWeaponUp)
+    ];
     internal static readonly int[] StandardAvatars = [1003, 1004, 1101, 1107, 1104, 1209, 1211];
     internal static readonly int[] StandardWeapons = [23000, 23002, 23003, 23004, 23005, 23012, 23013];
     private static readonly HashSet<int> BattlePassWeapons = [21028, 21029, 21030, 21031, 21032, 21033, 21034,
@@ -52,6 +60,9 @@ internal sealed class GachaCatalog
             var banner = group.Single();
             if (banner.GachaId > 0 && banner.IsActiveAt(now) && IsComplete(banner)) Banners.Add(banner.GachaId, banner);
         }
+        // A partial merge group aborts client page initialization, including later standard pools.
+        if (!CollaborationGroup.All(member => Banners.TryGetValue(member.Id, out var banner) && banner.GachaType == member.Type))
+            foreach (var member in CollaborationGroup) Banners.Remove(member.Id);
     }
 
     internal int Rarity(int id) => items.GetValueOrDefault(id).Rarity;
