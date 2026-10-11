@@ -1,4 +1,7 @@
 using March7thHoney.Data;
+using March7thHoney.Data.Custom;
+using March7thHoney.Util;
+using System.Runtime.CompilerServices;
 using March7thHoney.Database;
 using March7thHoney.Database.Gacha;
 using March7thHoney.Database.Inventory;
@@ -13,6 +16,9 @@ namespace March7thHoney.GameServer.Game.Gacha;
 
 public class GachaManager : BasePlayerManager<GachaData>
 {
+    // Reconnected managers share the cached GachaData; the gate must share that lifetime too.
+    private static readonly ConditionalWeakTable<GachaData, SemaphoreSlim> DrawGates = new();
+
     private const int NewbieGachaLimit = 50;
     private const int NewbieTenPullCost = 8;
     private const int CelestialInvitationPoolSize = 7;
@@ -122,13 +128,24 @@ public class GachaManager : BasePlayerManager<GachaData>
 
     public async ValueTask<DoGachaScRsp?> DoGacha(int bannerId, int times)
     {
+        var gate = DrawGates.GetValue(Data, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync();
+        try { return await ExecuteDraw(bannerId, times); }
+        finally { gate.Release(); }
+    }
+
+    private async ValueTask<DoGachaScRsp> ExecuteDraw(int bannerId, int times)
+    {
         var banner = GameData.BannersConfig.Banners.Find(x => x.GachaId == bannerId);
-        if (banner == null) return BuildGachaError(bannerId, Retcode.RetGachaIdNotExist);
+        if (banner == null || !banner.IsActiveAt(DateTimeOffset.UtcNow.ToUnixTimeSeconds()) ||
+            banner.GachaType.GetCostItemId() == 0 || Player.InventoryManager == null || Player.AvatarManager == null)
+            return BuildGachaError(bannerId, Retcode.RetGachaIdNotExist);
 
         if (times is not (1 or 10))
             return BuildGachaError(bannerId, Retcode.RetGachaNumInvalid);
 
-        var pityState = Data.GetPityState(GetPityFamily(banner.GachaType));
+        var pityState = Data.PityStates.GetValueOrDefault(((int)GetPityFamily(banner.GachaType)).ToString())
+            ?? new GachaPityState();
         if (banner.GachaType == GachaTypeEnum.Newbie && pityState.TotalPulls + times > NewbieGachaLimit)
             return BuildGachaError(bannerId, Retcode.RetGachaNewbieClose);
 
@@ -143,108 +160,71 @@ public class GachaManager : BasePlayerManager<GachaData>
         var fallbackItem = GetBlueWeapons().FirstOrDefault(GameData.ItemConfigData.ContainsKey);
         if (fallbackItem == 0) return BuildGachaError(bannerId, Retcode.RetGachaIdNotExist);
 
-        ItemData? removedCostItem = null;
-        if (costItemId > 0 && costItemCount > 0 && Player.InventoryManager != null)
-            removedCostItem = await Player.InventoryManager.RemoveItem(costItemId, costItemCount, sync: false);
+        var selected = Data.CharacterEventNonFeaturedPool.Take(CelestialInvitationPoolSize).ToList();
+        var goldAvatars = GetGoldAvatars();
+        var purpleAvatars = GetPurpleAvatars();
+        var purpleWeapons = GetPurpleWeapons();
+        var goldWeapons = GetGoldWeapons();
+        var blueWeapons = GetBlueWeapons();
+        if (banner.RateUpItems5.Concat(banner.RateUpItems4).Any(id =>
+                !GameData.ItemConfigData.ContainsKey(id) || GetRarity(id) == 0))
+            return BuildGachaError(bannerId, Retcode.RetGachaIdNotExist);
 
-        var decideItem = GetCharacterEventNonFeaturedPool();
+        var rules = new GachaRules(banner);
+        var next = Data;
         var items = new List<int>();
-        for (var i = 0; i < times; i++)
+        for (var index = 0; index < times; index++)
         {
-            var item = banner.DoGacha(decideItem, GetGoldAvatars(), GetPurpleAvatars(), GetPurpleWeapons(),
-                GetGoldWeapons(), GetBlueWeapons(), Data);
-            // Empty pool -> substitute the 3-star fallback so the player still gets a result.
+            var roll = rules.Evaluate(selected, goldAvatars, purpleAvatars, purpleWeapons,
+                goldWeapons, blueWeapons, next);
+            var item = roll.ItemId;
             if (item == 0 || !GameData.ItemConfigData.ContainsKey(item)) item = fallbackItem;
-
             items.Add(item);
+            next = roll.NextState;
         }
-        MarkGachaDataDirty();
 
+        // PutItem otherwise returns a detached light cone when the inventory is full.
+        var equipmentCount = items.Count(id => GameData.ItemConfigData[id].ItemMainType == ItemMainTypeEnum.Equipment);
+        if (Player.InventoryManager.Data.EquipmentItems.Count + equipmentCount > GameConstants.INVENTORY_MAX_EQUIPMENT)
+            return BuildGachaError(bannerId, Retcode.RetEquipmentExceedLimit);
+        if (items.Any(id => GameData.ItemConfigData[id].ItemMainType == ItemMainTypeEnum.AvatarCard &&
+                (!GameData.AvatarConfigData.TryGetValue(id, out var avatar) || avatar.MaxRank < 6)))
+            return BuildGachaError(bannerId, Retcode.RetGachaIdNotExist);
+
+        var removedCostItem = await Player.InventoryManager.RemoveItem(costItemId, costItemCount, sync: false);
+        if (removedCostItem == null) return BuildGachaError(bannerId, Retcode.RetItemNotEnough);
+        GachaRules.ApplyState(Data, next);
+        MarkGachaDataDirty();
+        var gachaItems = await GrantResults(bannerId, items, removedCostItem);
+        return GachaProtocol.BuildResult(bannerId, times, gachaItems);
+    }
+
+    private async ValueTask<List<GachaItem>> GrantResults(int bannerId, List<int> items, ItemData removedCostItem)
+    {
         var gachaItems = new List<GachaItem>();
         var syncItems = new List<ItemData>();
         if (removedCostItem != null) syncItems.Add(removedCostItem);
         // get rarity of item
         foreach (var item in items)
         {
-            var dirt = 0;
-            var star = 0;
             var rarity = GetRarity(item);
-
+            var avatar = Player.AvatarManager!.GetFormalAvatar(item);
+            var rankUpItemId = item + 10000;
+            var rankUpCount = Player.InventoryManager!.GetItem(rankUpItemId)?.Count ?? 0;
+            var conversion = GachaRewards.GetConversion(rarity, GetType(item) == 1, avatar != null,
+                avatar?.PathInfos[item].Rank ?? 0, rankUpCount);
+            var dirt = conversion.Dust;
+            var star = conversion.Star;
             Data.GachaHistory.Add(new GachaInfo
             {
-                GachaId = bannerId,
-                ItemId = item,
-                Time = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
+                GachaId = bannerId, ItemId = item, Time = DateTimeOffset.UtcNow.ToUnixTimeSeconds()
             });
             var gachaItem = new GachaItem();
-            if (rarity == 5)
-            {
-                var type = GetType(item);
-                if (type == 1)
+            if (conversion.RankUp)
+                gachaItem.TransferItemList = new ItemList
                 {
-                    var avatar = Player.AvatarManager?.GetFormalAvatar(item);
-                    if (avatar != null)
-                    {
-                        star += 40;
-                        var rankUpItemId = item + 10000;
-                        var rankUpItem = Player.InventoryManager!.GetItem(rankUpItemId);
-                        if (avatar.PathInfos[item].Rank + rankUpItem?.Count >= 6)
-                        {
-                            star += 60;
-                        }
-                        else
-                        {
-                            var dupeItem = new ItemList();
-                            dupeItem.ItemList_.Add(new Item
-                            {
-                                ItemId = (uint)rankUpItemId,
-                                Num = 1
-                            });
-                            gachaItem.TransferItemList = dupeItem;
-                        }
-                    }
-                }
-                else
-                {
-                    star += 20;
-                }
-            }
-            else if (rarity == 4)
-            {
-                var type = GetType(item);
-                if (type == 1)
-                {
-                    var avatar = Player.AvatarManager?.GetFormalAvatar(item);
-                    if (avatar != null)
-                    {
-                        star += 8;
-                        var rankUpItemId = item + 10000;
-                        var rankUpItem = Player.InventoryManager!.GetItem(rankUpItemId);
-                        if (avatar.PathInfos[item].Rank + rankUpItem?.Count >= 6)
-                        {
-                            star += 12;
-                        }
-                        else
-                        {
-                            var dupeItem = new ItemList();
-                            dupeItem.ItemList_.Add(new Item
-                            {
-                                ItemId = (uint)rankUpItemId,
-                                Num = 1
-                            });
-                            gachaItem.TransferItemList = dupeItem;
-                        }
-                    }
-                }
-                else
-                {
-                    star += 8;
-                }
-            }
-            else
-            {
-                dirt += 20;
-            }
+                    ItemList_ = { new Item { ItemId = (uint)rankUpItemId, Num = 1 } }
+                };
 
             ItemData? i;
             var isNewAvatar = false;
@@ -319,15 +299,7 @@ public class GachaManager : BasePlayerManager<GachaData>
         }
 
         await Player.SendPacket(new PacketPlayerSyncScNotify(syncItems));
-        var proto = new DoGachaScRsp
-        {
-            GachaId = (uint)bannerId,
-            GachaNum = (uint)times
-        };
-        // TODO 4.3: 4.2 的 DoGachaScRsp 新手池抽数/上限字段 (FJIBOAGDNDG/OKFNNHNLBOO) 在 4.3
-        // proto 重排后无法可靠对应，暂不下发新手池进度计数 (pity 状态仍持久化于 GachaData)。
-        proto.GachaItemList.AddRange(gachaItems);
-        return proto;
+        return gachaItems;
     }
 
     public GetGachaInfoScRsp ToProto()
@@ -464,11 +436,7 @@ public class GachaManager : BasePlayerManager<GachaData>
 
     private static DoGachaScRsp BuildGachaError(int bannerId, Retcode retcode)
     {
-        return new DoGachaScRsp
-        {
-            GachaId = (uint)Math.Max(0, bannerId),
-            Retcode = (uint)retcode
-        };
+        return GachaProtocol.BuildError(bannerId, retcode);
     }
 
     private int GetFirstAvatarUpGachaId()

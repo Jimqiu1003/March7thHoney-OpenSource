@@ -1,4 +1,5 @@
 using GachaRegression;
+using Google.Protobuf;
 using March7thHoney.Data.Custom;
 using March7thHoney.Database.Gacha;
 using March7thHoney.Enums;
@@ -50,4 +51,43 @@ var legacy = new GachaData { LastGachaFailedCount = 74, LastGachaPurpleFailedCou
 legacy.EnsurePityStateMigrated();
 Check(legacy.GetPityState(GachaPityFamilyEnum.AvatarUp).PullsSinceFiveStar == 74, "legacy migration");
 Check(legacy.GetPityState(GachaPityFamilyEnum.AvatarUp).NextFiveStarGuaranteedFeatured, "legacy guarantee");
-Console.WriteLine($"PASS {checks} baseline checks");
+foreach (var type in types)
+foreach (var seed in Enumerable.Range(1, 20))
+{
+    var frozen = new LegacyBannerConfig { GachaType = type, RateUpItems5 = [999], RateUpItems4 = [301, 401] };
+    var banner = new BannerConfig { GachaType = type, RateUpItems5 = [999], RateUpItems4 = [301, 401] };
+    foreach (var id in new[] { 1001, 2001 })
+    {
+        frozen.GachaId = banner.GachaId = id;
+        frozen.BeginTime = banner.BeginTime = 123;
+        frozen.EndTime = banner.EndTime = 321;
+        Check(frozen.ToInfo([101], [101], 17, 50).ToByteArray().SequenceEqual(
+            banner.ToInfo([101], [101], 17, 50).ToByteArray()), "page wire bytes unchanged until mapping is proven");
+    }
+    LegacyBannerConfig.RandomSource = new Random(seed);
+    var rules = new GachaRules(banner, new Random(seed));
+    var oldState = new GachaData();
+    var newState = new GachaData();
+    for (var draw = 0; draw < 200; draw++)
+    {
+        var unchanged = JsonConvert.SerializeObject(newState);
+        var expected = frozen.DoGacha([101], [101], [301], [401], [201], [501], oldState);
+        var actual = rules.Evaluate([101], [101], [301], [401], [201], [501], newState);
+        Check(unchanged == JsonConvert.SerializeObject(newState), "planning cannot mutate live state");
+        Check(expected == actual.ItemId, $"{type}: seeded item parity");
+        GachaRules.ApplyState(newState, actual.NextState);
+        Check(JsonConvert.SerializeObject(oldState) == JsonConvert.SerializeObject(newState), $"{type}: seeded pity parity");
+    }
+}
+Check(GachaRewards.GetConversion(3, false, false, 0, 0) == (20, 0, false), "three-star dust");
+Check(GachaRewards.GetConversion(5, false, false, 0, 0) == (0, 20, false), "five-star weapon");
+Check(GachaRewards.GetConversion(4, false, false, 0, 0) == (0, 8, false), "four-star weapon");
+foreach (var rarity in new[] { 4, 5 })
+{
+    Check(GachaRewards.GetConversion(rarity, true, false, 0, 0) == (0, 0, false), "new avatar");
+    Check(GachaRewards.GetConversion(rarity, true, true, 0, 0) == (0, rarity == 5 ? 40 : 8, true), "avatar duplicate");
+    Check(GachaRewards.GetConversion(rarity, true, true, 6, 0) == (0, rarity == 5 ? 100 : 20, false), "max rank without rank-up item");
+    Check(!GachaRewards.GetConversion(rarity, true, true, 3, 3).RankUp, "held rank-up items count");
+}
+await IntegrationChecks.Run(Check);
+Console.WriteLine($"PASS {checks} rule, conversion, request and persistence checks");
