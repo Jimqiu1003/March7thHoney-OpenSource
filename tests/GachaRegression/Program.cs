@@ -61,8 +61,15 @@ foreach (var seed in Enumerable.Range(1, 20))
         frozen.GachaId = banner.GachaId = id;
         frozen.BeginTime = banner.BeginTime = 123;
         frozen.EndTime = banner.EndTime = 321;
-        Check(frozen.ToInfo([101], [101], 17, 50).ToByteArray().SequenceEqual(
-            banner.ToInfo([101], [101], 17, 50).ToByteArray()), "existing banner fields retain wire mapping");
+        var projected = banner.ToInfo([101], [101], 17, 50);
+        Check(projected.GachaId == id && projected.BeginTime == 123 && projected.EndTime == 321,
+            "all banner types expose the configured active window");
+        Check((projected.GachaCeiling != null) == (type == GachaTypeEnum.Normal),
+            "ceiling follows banner kind rather than magic id");
+        Check(projected.ItemDetailList.SequenceEqual(type == GachaTypeEnum.AvatarUp ? new uint[] { 11 } : []),
+            "collaboration banner does not inherit regular event marker");
+        Check(projected.PrizeItemList.SequenceEqual(new uint[] { 999 }) && projected.ONIHOMCELJK.SequenceEqual(new uint[] { 301, 401 }),
+            "featured item projection retains known mapping");
     }
     LegacyBannerConfig.RandomSource = new Random(seed);
     var rules = new GachaRules(banner, new Random(seed));

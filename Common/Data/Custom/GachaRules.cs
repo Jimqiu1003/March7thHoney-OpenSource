@@ -1,20 +1,29 @@
 using March7thHoney.Database.Gacha;
 using March7thHoney.Enums;
-using MemoryPack;
 
 namespace March7thHoney.Data.Custom;
 
 public sealed class GachaRules(BannerConfig banner, Random? randomSource = null)
 {
     private readonly Random random = randomSource ?? Random.Shared;
+    private bool Weapon => banner.GachaType is GachaTypeEnum.WeaponUp or GachaTypeEnum.CollaborationWeaponUp;
+    private bool Event => banner.GachaType is GachaTypeEnum.AvatarUp or GachaTypeEnum.CollaborationAvatarUp || Weapon;
+
+    public static GachaPityFamilyEnum FamilyFor(GachaTypeEnum type) => type switch
+    {
+        GachaTypeEnum.Newbie => GachaPityFamilyEnum.Newbie,
+        GachaTypeEnum.AvatarUp => GachaPityFamilyEnum.AvatarUp,
+        GachaTypeEnum.WeaponUp => GachaPityFamilyEnum.WeaponUp,
+        GachaTypeEnum.CollaborationAvatarUp => GachaPityFamilyEnum.AvatarCollaboration,
+        GachaTypeEnum.CollaborationWeaponUp => GachaPityFamilyEnum.WeaponCollaboration,
+        _ => GachaPityFamilyEnum.Normal
+    };
 
     public (int ItemId, GachaData NextState) Evaluate(List<int> selected, List<int> goldAvatars,
-        List<int> purpleAvatars, List<int> purpleWeapons, List<int> goldWeapons, List<int> blueWeapons,
-        GachaData current)
+        List<int> purpleAvatars, List<int> purpleWeapons, List<int> goldWeapons, List<int> blueWeapons, GachaData current)
     {
-        var next = CloneState(current);
-        var item = Draw(selected, goldAvatars, purpleAvatars, purpleWeapons, goldWeapons, blueWeapons, next);
-        return (item, next);
+        var result = EvaluateBatch(1, selected, goldAvatars, purpleAvatars, purpleWeapons, goldWeapons, blueWeapons, current);
+        return (result.Items[0], result.NextState);
     }
 
     public (List<int> Items, GachaData NextState) EvaluateBatch(int times, List<int> selected,
@@ -22,55 +31,92 @@ public sealed class GachaRules(BannerConfig banner, Random? randomSource = null)
         List<int> blueWeapons, GachaData current)
     {
         if (times is not (1 or 10)) throw new ArgumentOutOfRangeException(nameof(times));
-        var next = CloneState(current);
+        var next = new GachaData
+        {
+            LastAvatarGachaFailed = current.LastAvatarGachaFailed,
+            LastWeaponGachaFailed = current.LastWeaponGachaFailed,
+            LastGachaFailedCount = current.LastGachaFailedCount,
+            LastGachaPurpleFailedCount = current.LastGachaPurpleFailedCount,
+            PityStates = current.PityStates.ToDictionary(pair => pair.Key, pair => new GachaPityState
+            {
+                PullsSinceFiveStar = pair.Value.PullsSinceFiveStar,
+                PullsSinceFourStarOrHigher = pair.Value.PullsSinceFourStarOrHigher,
+                NextFiveStarGuaranteedFeatured = pair.Value.NextFiveStarGuaranteedFeatured,
+                NextFourStarGuaranteedFeatured = pair.Value.NextFourStarGuaranteedFeatured,
+                TotalPulls = pair.Value.TotalPulls,
+                NewbieFiveStarClaimed = pair.Value.NewbieFiveStarClaimed
+            })
+        };
         var items = new List<int>(times);
         for (var index = 0; index < times; index++)
             items.Add(Draw(selected, goldAvatars, purpleAvatars, purpleWeapons, goldWeapons, blueWeapons, next));
         return (items, next);
     }
 
-    internal int Draw(List<int> characterEventNonFeaturedPool, List<int> standardGoldAvatars,
-        List<int> purpleAvatars, List<int> purpleWeapons, List<int> standardGoldWeapons,
-        List<int> blueWeapons, GachaData data)
+    internal int Draw(List<int> selected, List<int> goldAvatars, List<int> purpleAvatars,
+        List<int> purpleWeapons, List<int> goldWeapons, List<int> blueWeapons, GachaData data)
     {
-        var profile = ResolveRuleProfile();
-        var state = data.GetPityState(profile.Family);
-        var fiveStarPullNumber = state.PullsSinceFiveStar + 1;
-        var fourStarPullNumber = state.PullsSinceFourStarOrHigher + 1;
-
-        if (Chance(profile.FiveStarChanceAtPull(fiveStarPullNumber)))
+        var family = FamilyFor(banner.GachaType);
+        var state = data.GetPityState(family);
+        var pull = state.PullsSinceFiveStar + 1;
+        var fiveChance = banner.GachaType == GachaTypeEnum.Newbie ? (pull >= 50 ? 1 : .006)
+            : Weapon ? (pull >= 80 ? 1 : pull >= 66 ? .219633 : .008)
+            : pull >= 90 ? 1 : pull >= 76 ? .324 : .006;
+        int item;
+        if (Chance(fiveChance))
         {
-            var item = ResolveFiveStarItem(profile, state, characterEventNonFeaturedPool, standardGoldAvatars,
-                standardGoldWeapons);
+            if (banner.GachaType == GachaTypeEnum.Newbie) item = Pick(goldAvatars);
+            else if (!Event) item = PickCategory(goldAvatars, goldWeapons);
+            else
+            {
+                var featured = banner.RateUpItems5.Distinct().ToList();
+                var standard = Weapon ? goldWeapons : Exclude(selected, featured);
+                if (!Weapon && standard.Count == 0) standard = Exclude(goldAvatars, featured);
+                item = Featured(featured, standard, state.NextFiveStarGuaranteedFeatured, out var guaranteed);
+                if (featured.Count > 0) state.NextFiveStarGuaranteedFeatured = guaranteed;
+            }
             state.RecordFiveStar();
             if (banner.GachaType == GachaTypeEnum.Newbie) state.NewbieFiveStarClaimed = true;
-            SyncLegacyState(data, state, profile.Family);
-            return item;
         }
-
-        if (fourStarPullNumber >= profile.FourStarHardPity || Chance(profile.FourStarBaseChance))
+        else if (state.PullsSinceFourStarOrHigher + 1 >= 10 || Chance(Weapon ? .066 : .051))
         {
-            var item = ResolveFourStarItem(profile, state, purpleAvatars, purpleWeapons);
+            var featured = banner.RateUpItems4.Where(id => purpleWeapons.Contains(id) || !Weapon && purpleAvatars.Contains(id))
+                .Distinct().ToList();
+            if (!Event || featured.Count == 0)
+                item = Weapon ? Pick(Exclude(purpleAvatars.Concat(purpleWeapons), featured)) : PickCategory(purpleAvatars, purpleWeapons);
+            else
+            {
+                item = Featured(featured, Exclude(purpleAvatars.Concat(purpleWeapons), featured),
+                    state.NextFourStarGuaranteedFeatured, out var guaranteed);
+                state.NextFourStarGuaranteedFeatured = guaranteed;
+            }
             state.RecordFourStar();
-            SyncLegacyState(data, state, profile.Family);
-            return item;
         }
+        else { item = Pick(blueWeapons); state.RecordThreeStar(); }
 
-        var threeStarItem = PickOne(blueWeapons);
-        state.RecordThreeStar();
-        SyncLegacyState(data, state, profile.Family);
-        return threeStarItem;
+        if (family is GachaPityFamilyEnum.AvatarUp or GachaPityFamilyEnum.WeaponUp)
+        {
+            data.LastGachaFailedCount = state.PullsSinceFiveStar;
+            data.LastGachaPurpleFailedCount = state.PullsSinceFourStarOrHigher;
+            if (family == GachaPityFamilyEnum.AvatarUp) data.LastAvatarGachaFailed = state.NextFiveStarGuaranteedFeatured;
+            else data.LastWeaponGachaFailed = state.NextFiveStarGuaranteedFeatured;
+        }
+        return item;
     }
 
-    private static GachaData CloneState(GachaData data) => new()
+    private int Featured(List<int> featured, List<int> standard, bool guaranteed, out bool nextGuaranteed)
     {
-        LastAvatarGachaFailed = data.LastAvatarGachaFailed,
-        LastWeaponGachaFailed = data.LastWeaponGachaFailed,
-        LastGachaFailedCount = data.LastGachaFailedCount,
-        LastGachaPurpleFailedCount = data.LastGachaPurpleFailedCount,
-        PityStates = MemoryPackSerializer.Deserialize<Dictionary<string, GachaPityState>>(
-            MemoryPackSerializer.Serialize(data.PityStates))!
-    };
+        nextGuaranteed = guaranteed;
+        if (featured.Count == 0) return Pick(standard);
+        var up = guaranteed || Chance(Weapon ? .75 : .5) || standard.Count == 0;
+        nextGuaranteed = !up;
+        return Pick(up ? featured : standard);
+    }
+    private static List<int> Exclude(IEnumerable<int> items, List<int> featured) => items.Except(featured).ToList();
+    private int PickCategory(List<int> avatars, List<int> weapons) => avatars.Count == 0 ? Pick(weapons)
+        : weapons.Count == 0 ? Pick(avatars) : Chance(.5) ? Pick(avatars) : Pick(weapons);
+    private int Pick(List<int> items) => items.Count == 0 ? 0 : items[random.Next(items.Count)];
+    private bool Chance(double chance) => random.NextDouble() < chance;
 
     public static void ApplyState(GachaData target, GachaData next)
     {
@@ -79,212 +125,5 @@ public sealed class GachaRules(BannerConfig banner, Random? randomSource = null)
         target.LastGachaFailedCount = next.LastGachaFailedCount;
         target.LastGachaPurpleFailedCount = next.LastGachaPurpleFailedCount;
         target.PityStates = next.PityStates;
-    }
-
-    private GachaRuleProfile ResolveRuleProfile()
-    {
-        return banner.GachaType switch
-        {
-            GachaTypeEnum.Newbie => new GachaRuleProfile
-            {
-                Family = GachaPityFamilyEnum.Newbie,
-                FiveStarHardPity = 50,
-                FourStarHardPity = 10,
-                FiveStarFeaturedChance = 0,
-                FourStarFeaturedChance = 0,
-                FourStarBaseChance = 0.051,
-                FiveStarChanceAtPull = FiveStarChanceNewbie
-            },
-            GachaTypeEnum.WeaponUp => new GachaRuleProfile
-            {
-                Family = GachaPityFamilyEnum.WeaponUp,
-                FiveStarHardPity = 80,
-                FourStarHardPity = 10,
-                FiveStarFeaturedChance = 0.75,
-                FourStarFeaturedChance = 0.75,
-                FourStarBaseChance = 0.066,
-                HasFeaturedFiveStarGuarantee = true,
-                HasFeaturedFourStarGuarantee = true,
-                FiveStarChanceAtPull = FiveStarChance80
-            },
-            GachaTypeEnum.AvatarUp => new GachaRuleProfile
-            {
-                Family = GachaPityFamilyEnum.AvatarUp,
-                FiveStarHardPity = 90,
-                FourStarHardPity = 10,
-                FiveStarFeaturedChance = 0.5,
-                FourStarFeaturedChance = 0.5,
-                FourStarBaseChance = 0.051,
-                HasFeaturedFiveStarGuarantee = true,
-                HasFeaturedFourStarGuarantee = true,
-                FiveStarChanceAtPull = FiveStarChance90
-            },
-            // Collaboration pools share the AvatarUp / WeaponUp rules (banner.GachaTypeBasicInfo.json lists the
-            // same UpPropability 50 / 75) but keep their own pity counters, like the official server.
-            GachaTypeEnum.CollaborationAvatarUp => new GachaRuleProfile
-            {
-                Family = GachaPityFamilyEnum.AvatarCollaboration,
-                FiveStarHardPity = 90,
-                FourStarHardPity = 10,
-                FiveStarFeaturedChance = 0.5,
-                FourStarFeaturedChance = 0.5,
-                FourStarBaseChance = 0.051,
-                HasFeaturedFiveStarGuarantee = true,
-                HasFeaturedFourStarGuarantee = true,
-                FiveStarChanceAtPull = FiveStarChance90
-            },
-            GachaTypeEnum.CollaborationWeaponUp => new GachaRuleProfile
-            {
-                Family = GachaPityFamilyEnum.WeaponCollaboration,
-                FiveStarHardPity = 80,
-                FourStarHardPity = 10,
-                FiveStarFeaturedChance = 0.75,
-                FourStarFeaturedChance = 0.75,
-                FourStarBaseChance = 0.066,
-                HasFeaturedFiveStarGuarantee = true,
-                HasFeaturedFourStarGuarantee = true,
-                FiveStarChanceAtPull = FiveStarChance80
-            },
-            _ => new GachaRuleProfile
-            {
-                Family = GachaPityFamilyEnum.Normal,
-                FiveStarHardPity = 90,
-                FourStarHardPity = 10,
-                FiveStarFeaturedChance = 0,
-                FourStarFeaturedChance = 0,
-                FourStarBaseChance = 0.051,
-                FiveStarChanceAtPull = FiveStarChance90
-            }
-        };
-    }
-
-    private int ResolveFiveStarItem(GachaRuleProfile profile, GachaPityState state,
-        List<int> characterEventNonFeaturedPool, List<int> standardGoldAvatars, List<int> standardGoldWeapons)
-    {
-        var featured = banner.RateUpItems5.Distinct().ToList();
-
-        return banner.GachaType switch
-        {
-            GachaTypeEnum.Newbie => PickOne(standardGoldAvatars),
-            GachaTypeEnum.WeaponUp or GachaTypeEnum.CollaborationWeaponUp => ResolveFeaturedOrStandardFiveStar(
-                profile, state, featured, standardGoldWeapons),
-            GachaTypeEnum.AvatarUp or GachaTypeEnum.CollaborationAvatarUp => ResolveFeaturedOrStandardFiveStar(
-                profile, state, featured,
-                GetCharacterEventNonFeaturedPool(characterEventNonFeaturedPool, standardGoldAvatars, featured)),
-            _ => PickByCategory(standardGoldAvatars, standardGoldWeapons)
-        };
-    }
-
-    private int ResolveFeaturedOrStandardFiveStar(GachaRuleProfile profile, GachaPityState state, List<int> featured,
-        List<int> standard)
-    {
-        if (featured.Count == 0) return PickOne(standard);
-
-        if (state.NextFiveStarGuaranteedFeatured || Chance(profile.FiveStarFeaturedChance) || standard.Count == 0)
-        {
-            state.NextFiveStarGuaranteedFeatured = false;
-            return PickOne(featured);
-        }
-
-        state.NextFiveStarGuaranteedFeatured = true;
-        return PickOne(standard);
-    }
-
-    private int ResolveFourStarItem(GachaRuleProfile profile, GachaPityState state, List<int> purpleAvatars,
-        List<int> purpleWeapons)
-    {
-        var isWeaponPool = banner.GachaType is GachaTypeEnum.WeaponUp or GachaTypeEnum.CollaborationWeaponUp;
-        var featured = isWeaponPool
-            ? banner.RateUpItems4.Where(purpleWeapons.Contains).Distinct().ToList()
-            : banner.RateUpItems4.Where(id => purpleAvatars.Contains(id) || purpleWeapons.Contains(id)).Distinct().ToList();
-
-        if (!profile.HasFeaturedFourStarGuarantee || featured.Count == 0)
-        {
-            return isWeaponPool
-                ? PickOne(WithoutFeatured(purpleAvatars.Concat(purpleWeapons), featured))
-                : PickByCategory(purpleAvatars, purpleWeapons);
-        }
-
-        var standard = WithoutFeatured(purpleAvatars.Concat(purpleWeapons), featured);
-        if (state.NextFourStarGuaranteedFeatured || Chance(profile.FourStarFeaturedChance) || standard.Count == 0)
-        {
-            state.NextFourStarGuaranteedFeatured = false;
-            return PickOne(featured);
-        }
-
-        state.NextFourStarGuaranteedFeatured = true;
-        return PickOne(standard);
-    }
-
-    private static List<int> GetCharacterEventNonFeaturedPool(List<int> selectedPool, List<int> fallbackPool,
-        List<int> featured)
-    {
-        var pool = WithoutFeatured(selectedPool, featured);
-        return pool.Count > 0 ? pool : WithoutFeatured(fallbackPool, featured);
-    }
-
-    private static List<int> WithoutFeatured(IEnumerable<int> items, List<int> featured)
-    {
-        var featuredSet = featured.ToHashSet();
-        return items.Where(id => !featuredSet.Contains(id)).Distinct().ToList();
-    }
-
-    private int PickByCategory(List<int> avatars, List<int> weapons)
-    {
-        if (avatars.Count == 0) return PickOne(weapons);
-        if (weapons.Count == 0) return PickOne(avatars);
-        return Chance(0.5) ? PickOne(avatars) : PickOne(weapons);
-    }
-
-    private int PickOne(IReadOnlyList<int> items)
-    {
-        return items.Count == 0 ? 0 : items[random.Next(items.Count)];
-    }
-
-    private bool Chance(double chance)
-    {
-        return random.NextDouble() < chance;
-    }
-
-    private static double FiveStarChance90(int pullNumber)
-    {
-        if (pullNumber >= 90) return 1.0;
-        return pullNumber >= 76 ? 0.324 : 0.006;
-    }
-
-    private static double FiveStarChance80(int pullNumber)
-    {
-        if (pullNumber >= 80) return 1.0;
-        return pullNumber >= 66 ? 0.219633 : 0.008;
-    }
-
-    private static double FiveStarChanceNewbie(int pullNumber)
-    {
-        return pullNumber >= 50 ? 1.0 : 0.006;
-    }
-
-    private static void SyncLegacyState(GachaData data, GachaPityState state, GachaPityFamilyEnum family)
-    {
-        if (family is not (GachaPityFamilyEnum.AvatarUp or GachaPityFamilyEnum.WeaponUp)) return;
-
-        data.LastGachaFailedCount = state.PullsSinceFiveStar;
-        data.LastGachaPurpleFailedCount = state.PullsSinceFourStarOrHigher;
-        if (family == GachaPityFamilyEnum.AvatarUp)
-            data.LastAvatarGachaFailed = state.NextFiveStarGuaranteedFeatured;
-        else
-            data.LastWeaponGachaFailed = state.NextFiveStarGuaranteedFeatured;
-    }
-
-    private sealed class GachaRuleProfile
-    {
-        public GachaPityFamilyEnum Family { get; init; }
-        public int FiveStarHardPity { get; init; }
-        public int FourStarHardPity { get; init; }
-        public double FiveStarFeaturedChance { get; init; }
-        public double FourStarFeaturedChance { get; init; }
-        public double FourStarBaseChance { get; init; }
-        public Func<int, double> FiveStarChanceAtPull { get; init; } = _ => 0;
-        public bool HasFeaturedFiveStarGuarantee { get; init; }
-        public bool HasFeaturedFourStarGuarantee { get; init; }
     }
 }

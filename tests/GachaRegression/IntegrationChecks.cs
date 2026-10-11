@@ -160,6 +160,20 @@ internal static class IntegrationChecks
             GameData.ItemConfigData[11101] = new ItemConfigExcel { ID = 11101, ItemMainType = ItemMainTypeEnum.Material };
             await inventory.AddItem(1101, 1, false, sync: false);
             check(inventory.GetItem(11101) == null, "rank-six duplicate cannot grant an extra rank-up item");
+            var catalogMethod = typeof(GachaManager).GetMethod("Catalog", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var planner = typeof(GachaManager).GetMethod("PlanRewards", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            var existingAvatar = avatars.GetFormalAvatar(1101)!;
+            existingAvatar.PathInfos[1101].Rank = 5;
+            var planBefore = State();
+            var plannedRewards = ((System.Collections.IEnumerable)planner.Invoke(manager,
+                [new List<int> { 1101, 1101 }, catalogMethod.Invoke(manager, null)!])!).Cast<object>().ToList();
+            int Star(object reward) => (int)reward.GetType().GetProperty("Star")!.GetValue(reward)!;
+            bool RankUp(object reward) => (bool)reward.GetType().GetProperty("RankUp")!.GetValue(reward)!;
+            check(Star(plannedRewards[0]) == 40 && RankUp(plannedRewards[0]) &&
+                Star(plannedRewards[1]) == 100 && !RankUp(plannedRewards[1]),
+                "batch reward planning advances held copies across the max-rank boundary");
+            check(State() == planBefore, "reward planning cannot modify real inventory or gacha state");
+            existingAvatar.PathInfos[1101].Rank = 6;
             var beforeSave = State();
             database.SaveDatabase();
             using var loadedConnection = new SqliteConnection(connectionString);

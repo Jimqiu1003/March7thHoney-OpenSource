@@ -1,77 +1,53 @@
 using March7thHoney.Enums;
 using March7thHoney.Proto;
+
 namespace March7thHoney.Data.Custom;
 
 public static class GachaProtocol
 {
     public static NEIMLKNMDBM BuildSelection(uint bannerId, uint decideItemType, IEnumerable<uint> order) => new()
     {
-        MMELNCHIDNC = bannerId,
-        GFANBHAEKOK = decideItemType,
-        OJNEFBJHCCK = { order }
+        MMELNCHIDNC = bannerId, GFANBHAEKOK = decideItemType, OJNEFBJHCCK = { order }
     };
 
-    public static GachaInfo BuildInfo(BannerConfig banner, List<int> decideOrder,
-        List<int> goldAvatar, int gachaPullCount = 0, int gachaPullLimit = 0,
-        IEnumerable<int>? fourStarItems = null)
+    public static GachaInfo BuildInfo(BannerConfig banner, List<int> decideOrder, List<int> goldAvatar,
+        int gachaPullCount = 0, int gachaPullLimit = 0, IEnumerable<int>? fourStarItems = null)
     {
         var info = new GachaInfo
         {
-            GachaId = (uint)banner.GachaId,
-            DetailUrl = "",
-            HistoryUrl = ""
+            GachaId = (uint)banner.GachaId, BeginTime = banner.BeginTime, EndTime = banner.EndTime,
+            DetailUrl = "", HistoryUrl = "",
+            PrizeItemList = { banner.RateUpItems5.Select(id => (uint)id) },
+            ONIHOMCELJK = { (fourStarItems ?? banner.RateUpItems4).Select(id => (uint)id) }
         };
-
-        if (banner.GachaType != GachaTypeEnum.Normal)
-        {
-            info.BeginTime = banner.BeginTime;
-            info.EndTime = banner.EndTime;
-        }
-
-        // TODO 4.3: 4.2 的新手池抽数/上限字段 FJIBOAGDNDG(tag13)/OKFNNHNLBOO(tag14) 在 4.3
-        // proto 整体重排后已无对应 tag，且剩余混淆字段语义不明，暂不下发新手池进度计数。
-        // 抽卡不在登录路径，不影响主流程。
-        _ = gachaPullCount;
-        _ = gachaPullLimit;
-
-        if (banner.GachaId == 1001)
-        {
-            if (banner.RateUpItems5.Count > 0)
-            {
-                info.PrizeItemList.AddRange(banner.RateUpItems5.Select(id => (uint)id));
-            }
-
+        if (banner.GachaType == GachaTypeEnum.Normal)
             info.GachaCeiling = new GachaCeiling
             {
-                IsClaimed = true, // TODO: Implement this
+                // Ceiling exchange is outside this rewrite; do not grant an unimplemented free reward.
+                IsClaimed = true,
                 AvatarList = { goldAvatar.Select(id => new GachaCeilingAvatar { AvatarId = (uint)id }) }
             };
-        }
-        else
-        {
-            if (banner.RateUpItems5.Count > 0)
-            {
-                info.PrizeItemList.AddRange(banner.RateUpItems5.Select(id => (uint)id));
-            }
-
-            // Observed official packet behavior: avatar event banners carry marker "11" here.
-            if (banner.GachaType is GachaTypeEnum.AvatarUp or GachaTypeEnum.CollaborationAvatarUp)
-                info.ItemDetailList.Add(11);
-        }
-
-        // Featured (rate-up) pool the client renders in the banner's probability panel. This is the
-        // field the 4.2 code filled as CBHAEFNAFLE; the 4.3 proto rename left it unset, which leaves an
-        // event banner with an empty rate-up section.
-        info.ONIHOMCELJK.AddRange((fourStarItems ?? banner.RateUpItems4).Select(id => (uint)id));
-
+        // Retain the working regular-event marker; collaboration must not inherit that projection.
+        if (banner.GachaType == GachaTypeEnum.AvatarUp) info.ItemDetailList.Add(11);
+        // shortcut: unknown progress fields stay unset until target-build semantics are verified.
+        _ = decideOrder; _ = gachaPullCount; _ = gachaPullLimit;
         return info;
+    }
+
+    public static GetGachaInfoScRsp BuildPage(IEnumerable<GachaInfo> banners, IEnumerable<NEIMLKNMDBM> selections, uint random)
+    {
+        var page = new GetGachaInfoScRsp { Retcode = 0, GachaRandom = random };
+        page.GachaInfoList.AddRange(banners);
+        page.AKMDBPNEHDE.AddRange(selections);
+        return page;
     }
 
     public static DoGachaScRsp BuildResult(int bannerId, int times, IEnumerable<GachaItem> items)
     {
-        // shortcut: progress fields remain unset until the target live-build mapping is confirmed.
-        var response = new DoGachaScRsp { GachaId = (uint)bannerId, GachaNum = (uint)times };
+        var response = new DoGachaScRsp { Retcode = 0, GachaId = (uint)bannerId, GachaNum = (uint)times };
         response.GachaItemList.AddRange(items);
+        if (times is not (1 or 10) || response.GachaItemList.Count != times)
+            throw new ArgumentException("Draw response does not match the planned draw count");
         return response;
     }
 

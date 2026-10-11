@@ -1,12 +1,12 @@
-# Gacha rewrite: complete catalog and settlement candidate
+# Gacha rebuild: new catalog, rule engine, planner and executor
 
 Baseline: `fe00bdbda3c28ca33d01f171566aa35b5ab95083`, branch `4.6`.
 Display investigation target: `CNPRODWin4.6.0 / 16566615_V4.6Live`.
 
 ## Changes
 
-- `BannerConfig` retains its serialized members and public entrypoints. `GachaRules` computes on a copied pity state, with an injectable `Random` for deterministic comparisons. The existing chances, guarantees, category choices and random-call order are preserved.
-- `GachaManager` validates requests, plans all results, checks inventory capacity and then charges tickets and applies rewards through existing managers. A gate shared by cached gacha data serializes draws across reconnect-created managers. Invalid requests do not create a pity entry.
+- `BannerConfig` retains its serialized members and public entrypoints. `GachaRules` is newly implemented as staged state transitions, with an injectable `Random` and an explicit state copy. Fixed-seed comparisons preserve existing chances, guarantees, category choices and random-call order.
+- `GachaCatalog` creates a request-local resource index and one validated active catalog for page and draw paths. `GachaManager` is newly implemented as validation, complete draw/reward planning, capacity checks, charging and reward application. Duplicate conversion is planned against temporary ownership/copy counters before charging, including duplicates crossing the max-rank boundary within one batch. Material overflow is rejected before charging.
 - `GachaRewards` centralizes duplicate conversion. A confirmed null-count bug is corrected in both the response and avatar-card inventory helper: a rank-six avatar with no held rank-up material must receive the maximum duplicate conversion, without an extra rank-up material.
 - `GachaProtocol` centralizes banner and draw response construction. No unknown field is assigned a guessed meaning; no protocol definitions or generated messages have been changed.
 
@@ -14,6 +14,7 @@ Display investigation target: `CNPRODWin4.6.0 / 16566615_V4.6Live`.
 - Page and draw paths share candidate validation. Duplicate banner IDs and missing reachable reward definitions are rejected before charging. The old invalid-result-to-three-star replacement is removed. Existing `RateUpItems4` files contain five-star preview entries: the serialized configuration is retained, the draw rules keep their rarity filtering, and the page's four-star list now contains only actual four-star candidates.
 - Ten pulls clone pity state once, then advance the staged state in sequence. Selection mutations and page reads share the draw gate. The network handler uses the asynchronous selection entrypoint; the original synchronous entrypoint remains available for existing callers.
 - An exception after settlement begins blocks further draws/selection changes for that cached player state, including managers recreated on reconnect. It logs only the exception type. Inventory-sync failure after successful rewards does not roll back or re-execute the draw; reconnect refreshes inventory.
+- The page projector is newly implemented by banner kind rather than special-case ID 1001. All banners expose their configured time window. Collaboration banners no longer inherit the working regular avatar-event marker. These known-field changes require native-client acceptance; unknown fields remain untouched.
 
 Rejected expired/unknown pools, insufficient inventory capacity and invalid resource IDs are intentional validation changes. Save schema, history, existing pity-family keys, probabilities and newbie cost remain unchanged. Failed database batches retain the existing rollback and retry behavior. Settlement quarantine is process-local; restarting does not repair a partial settlement. An operator must reconcile affected inventory/history/pity before allowing further draws. The existing periodic-save window remains; this is not a durable transaction system.
 
@@ -43,7 +44,7 @@ Architecture ideas were reviewed from:
 - [LunarCore](https://github.com/Melledy/LunarCore/tree/04b5de871c62895091c4d65243b2e03997e66f23), `GachaBanner` and `GachaService`: separate banner projection and execution.
 - [DanhengServer-Public](https://github.com/Luotianyi-0712/DanhengServer-Public/tree/ef18bc2294d8a15d61bc4a0c7b29b4de6da2871c), `GachaManager`: keep inventory integration and reward synchronization together.
 
-These references are not evidence for this CN live build's wire mapping. Their probability implementations and generated protocol fields were not copied. The implementation moves and restructures Honey's own baseline code under the repository's existing license.
+These references are not evidence for this CN live build's wire mapping. Their probability implementations and generated protocol fields were not copied. The new implementation uses the repository's existing license and preserves its economic contract through the frozen baseline, rather than retaining the old control flow.
 
 ## Local deployment
 
