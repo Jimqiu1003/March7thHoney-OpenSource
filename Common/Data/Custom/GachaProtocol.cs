@@ -4,8 +4,16 @@ namespace March7thHoney.Data.Custom;
 
 public static class GachaProtocol
 {
+    public static NEIMLKNMDBM BuildSelection(uint bannerId, uint decideItemType, IEnumerable<uint> order) => new()
+    {
+        MMELNCHIDNC = bannerId,
+        GFANBHAEKOK = decideItemType,
+        OJNEFBJHCCK = { order }
+    };
+
     public static GachaInfo BuildInfo(BannerConfig banner, List<int> decideOrder,
-        List<int> goldAvatar, int gachaPullCount = 0, int gachaPullLimit = 0)
+        List<int> goldAvatar, int gachaPullCount = 0, int gachaPullLimit = 0,
+        IEnumerable<int>? fourStarItems = null)
     {
         var info = new GachaInfo
         {
@@ -54,8 +62,7 @@ public static class GachaProtocol
         // Featured (rate-up) pool the client renders in the banner's probability panel. This is the
         // field the 4.2 code filled as CBHAEFNAFLE; the 4.3 proto rename left it unset, which leaves an
         // event banner with an empty rate-up section.
-        if (banner.RateUpItems4.Count > 0)
-            info.ONIHOMCELJK.AddRange(banner.RateUpItems4.Select(id => (uint)id));
+        info.ONIHOMCELJK.AddRange((fourStarItems ?? banner.RateUpItems4).Select(id => (uint)id));
 
         return info;
     }

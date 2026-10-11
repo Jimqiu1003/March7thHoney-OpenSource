@@ -1,10 +1,13 @@
 using System.Reflection;
+using System.IO.Compression;
+using MemoryPack;
 using March7thHoney.Data;
 using March7thHoney.Data.Custom;
 using March7thHoney.Data.Excel;
 using March7thHoney.Database;
 using March7thHoney.Database.Avatar;
 using March7thHoney.Database.Gacha;
+using March7thHoney.Database.Friend;
 using March7thHoney.Database.Generated;
 using March7thHoney.Database.Inventory;
 using March7thHoney.Database.Player;
@@ -23,7 +26,7 @@ namespace GachaRegression;
 
 internal static class IntegrationChecks
 {
-    internal static async Task Run(Action<bool, string> check)
+    internal static async Task Run(Action<bool, string> check, string? resourceCache = null)
     {
         // No real configuration, account or runtime files are read by this process.
         var file = Path.Combine(Path.GetTempPath(), $"m7h-gacha-test-{Guid.NewGuid():N}.db");
@@ -54,6 +57,24 @@ internal static class IntegrationChecks
             typeof(PlayerInstance).GetProperty(nameof(PlayerInstance.InventoryManager))!.SetValue(player, inventory);
             typeof(PlayerInstance).GetProperty(nameof(PlayerInstance.AvatarManager))!.SetValue(player, avatars);
             var manager = new GachaManager(player);
+            foreach (var id in manager.GetGoldAvatars())
+            {
+                GameData.AvatarConfigData[id] = new AvatarConfigExcel { AvatarID = id, MaxRank = 6,
+                    Rarity = RarityEnum.CombatPowerAvatarRarityType5 };
+                GameData.ItemConfigData[id] = new ItemConfigExcel { ID = id, ItemMainType = ItemMainTypeEnum.AvatarCard };
+                GameData.ItemConfigData[id + 10000] = new ItemConfigExcel { ID = id + 10000,
+                    ItemMainType = ItemMainTypeEnum.Material, PileLimit = int.MaxValue };
+                avatars.Data.FormalAvatars.Add(new FormalAvatarInfo { BaseAvatarId = id, AvatarId = id,
+                    PathInfos = { [id] = new PathInfo(id) { Rank = 6 } } });
+            }
+            foreach (var id in manager.GetGoldWeapons().Append(21001))
+            {
+                GameData.ItemConfigData[id] = new ItemConfigExcel { ID = id, ItemMainType = ItemMainTypeEnum.Equipment };
+                GameData.EquipmentConfigData[id] = new EquipmentConfigExcel { EquipmentID = id, Release = true,
+                    Rarity = id == 21001 ? RarityEnum.CombatPowerLightconeRarity4 : RarityEnum.CombatPowerLightconeRarity5 };
+            }
+            // Recreate the manager after fixture resources exist, like normal resource-first startup.
+            manager = new GachaManager(player);
             inventory.Data.MaterialItems.Add(new ItemData { ItemId = 101, Count = 100 });
             string State() => JsonConvert.SerializeObject(new { Gacha = manager.Data, Inventory = inventory.Data });
             async Task Reject(int id, int count, Retcode expected)
@@ -80,15 +101,18 @@ internal static class IntegrationChecks
             inventory.Data.MaterialItems[0].Count = 100;
             inventory.Data.EquipmentItems.AddRange(Enumerable.Range(0, GameConstants.INVENTORY_MAX_EQUIPMENT)
                 .Select(_ => new ItemData { ItemId = 20001, Count = 1 }));
-            await Reject(1001, 1, Retcode.RetEquipmentExceedLimit);
+            await Reject(1001, 10, Retcode.RetEquipmentExceedLimit);
             inventory.Data.EquipmentItems.Clear();
             var single = (await manager.DoGacha(1001, 1))!;
             check(single.Retcode == 0 && single.GachaNum == 1 && single.GachaItemList.Count == 1, "single response");
-            check(inventory.GetItem(101)!.Count == 99 && inventory.Data.EquipmentItems.Count == 1, "single cost and reward");
+            check(inventory.GetItem(101)!.Count == 99 && manager.Data.GachaHistory.Count == 1, "single cost and history");
             var ten = (await manager.DoGacha(1001, 10))!;
             check(ten.Retcode == 0 && ten.GachaItemList.Count == 10 && inventory.GetItem(101)!.Count == 89,
                 "ten response and cost");
-            check(inventory.GetItem(251)!.Count == 220 && manager.Data.GachaHistory.Count == 11, "dust and history");
+            var threeStars = single.GachaItemList.Concat(ten.GachaItemList)
+                .Count(item => item.GachaItem_.ItemId == 20001);
+            check((inventory.GetItem(251)?.Count ?? 0) == threeStars * 20 && manager.Data.GachaHistory.Count == 11,
+                "dust matches actual three-star rewards and history");
             banner.GachaType = GachaTypeEnum.Newbie;
             var newbie = (await manager.DoGacha(1001, 10))!;
             check(newbie.Retcode == 0 && inventory.GetItem(101)!.Count == 81, "newbie discount");
@@ -109,10 +133,23 @@ internal static class IntegrationChecks
             check(State() == selectionBefore, "invalid selection preserves state");
             check(manager.SetCharacterEventNonFeaturedPool(2001, 1, manager.GetGoldAvatars().Select(x => (uint)x)) == Retcode.RetSucc,
                 "valid selection accepted");
+            GameData.BannersConfig.Banners.Add(new BannerConfig { GachaId = 3001,
+                GachaType = GachaTypeEnum.CollaborationAvatarUp });
+            var page = manager.ToProto();
+            check(page.AKMDBPNEHDE.Count == 2, "page contains event and collaboration selections");
+            foreach (var selection in page.AKMDBPNEHDE)
+                check(selection.Equals(GachaProtocol.BuildSelection(selection.MMELNCHIDNC,
+                    (uint)manager.Data.CharacterEventDecideItemType,
+                    manager.GetCharacterEventNonFeaturedPool().Select(id => (uint)id))), "initial selection matches setter contract");
+            banner.RateUpItems5 = [999999];
+            check(!manager.ToProto().GachaInfoList.Any(info => info.GachaId == 1001), "invalid pool is not advertised");
+            banner.RateUpItems5.Clear();
+            GameData.ItemConfigData.Remove(21001);
+            await Reject(1001, 10, Retcode.RetGachaIdNotExist);
+            check(manager.ToProto().GachaInfoList.Count == 0, "missing reachable candidate hides affected pools");
+            GameData.ItemConfigData[21001] = new ItemConfigExcel { ID = 21001, ItemMainType = ItemMainTypeEnum.Equipment };
             GameData.ItemConfigData[1101] = new ItemConfigExcel { ID = 1101, ItemMainType = ItemMainTypeEnum.AvatarCard };
             GameData.ItemConfigData[11101] = new ItemConfigExcel { ID = 11101, ItemMainType = ItemMainTypeEnum.Material };
-            avatars.Data.FormalAvatars.Add(new FormalAvatarInfo { BaseAvatarId = 1101, AvatarId = 1101,
-                PathInfos = { [1101] = new PathInfo(1101) { Rank = 6 } } });
             await inventory.AddItem(1101, 1, false, sync: false);
             check(inventory.GetItem(11101) == null, "rank-six duplicate cannot grant an extra rank-up item");
             var beforeSave = State();
@@ -141,6 +178,84 @@ internal static class IntegrationChecks
             var afterRetry = (GachaData)gachaStore.LoadAll(loadedConnection).Single();
             check(afterRetry.GetPityState(GachaPityFamilyEnum.Normal).TotalPulls == changed.TotalPulls,
                 "failed batch stays dirty and retries");
+
+            // Synthetic incomplete avatar resources fail after tickets are removed.
+            var failingPlayer = new PlayerInstance(new PlayerData { Uid = 2 }) { Uid = 2 };
+            var failingInventory = new InventoryManager(failingPlayer);
+            var failingAvatars = new AvatarManager(failingPlayer);
+            typeof(PlayerInstance).GetProperty(nameof(PlayerInstance.InventoryManager))!.SetValue(failingPlayer, failingInventory);
+            typeof(PlayerInstance).GetProperty(nameof(PlayerInstance.AvatarManager))!.SetValue(failingPlayer, failingAvatars);
+            var failingManager = new GachaManager(failingPlayer);
+            failingInventory.Data.MaterialItems.Add(new ItemData { ItemId = 101, Count = 20 });
+            banner.GachaType = GachaTypeEnum.Newbie;
+            failingManager.Data.GetPityState(GachaPityFamilyEnum.Newbie).PullsSinceFiveStar = 49;
+            var interrupted = (await failingManager.DoGacha(1001, 1))!;
+            check(interrupted.Retcode == (uint)Retcode.RetServerInternalError && failingInventory.GetItem(101)!.Count == 19,
+                "partial settlement error is reported");
+            var interruptedState = JsonConvert.SerializeObject(new { failingInventory.Data, Gacha = failingManager.Data });
+            failingManager = new GachaManager(failingPlayer);
+            check((await failingManager.DoGacha(1001, 1))!.Retcode == (uint)Retcode.RetServerInternalError,
+                "recreated manager retains settlement quarantine");
+            check(await failingManager.SetCharacterEventNonFeaturedPoolAsync(2001, 1,
+                manager.GetGoldAvatars().Select(id => (uint)id)) == Retcode.RetServerInternalError,
+                "quarantined player cannot change selection");
+            check(JsonConvert.SerializeObject(new { failingInventory.Data, Gacha = failingManager.Data }) == interruptedState,
+                "quarantined request cannot mutate partial state again");
+
+            if (resourceCache != null)
+            {
+                // Optional read-only resource compatibility check; never reads the runtime database or credentials.
+                MemoryPackFormatterProvider.Register(new JsonObjectMemoryPackFormatter());
+                MemoryPackFormatterProvider.Register(new BigIntegerMemoryPackFormatter());
+                using var input = File.OpenRead(resourceCache);
+                using var gzip = new GZipStream(input, CompressionMode.Decompress);
+                using var buffer = new MemoryStream();
+                gzip.CopyTo(buffer);
+                GameData.ApplySnapshot(MemoryPackSerializer.Deserialize<GameDataSnapshot>(buffer.ToArray())!);
+                var bannersFile = Path.Combine(Path.GetDirectoryName(resourceCache)!, "Custom", "Banners.json");
+                GameData.BannersConfig = new BannersConfig
+                {
+                    Banners = JsonConvert.DeserializeObject<List<BannerConfig>>(File.ReadAllText(bannersFile))!
+                };
+                var catalogManager = new GachaManager(player);
+                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                var active = GameData.BannersConfig.Banners.Where(b => b.IsActiveAt(now)).ToList();
+                var catalogPage = catalogManager.ToProto();
+                check(catalogPage.GachaInfoList.Count == active.Count, "loaded resource cache has complete supported catalog");
+                check(catalogPage.GachaInfoList.All(info => info.ONIHOMCELJK.All(id => catalogManager.GetRarity((int)id) == 4)),
+                    "four-star page list excludes legacy five-star preview entries");
+                check(catalogPage.AKMDBPNEHDE.Count == active.Count(b => b.GachaType is
+                    GachaTypeEnum.AvatarUp or GachaTypeEnum.CollaborationAvatarUp), "loaded catalog selection coverage");
+                typeof(PlayerInstance).GetProperty(nameof(PlayerInstance.FriendRecordData))!.SetValue(player, new FriendRecordData());
+                inventory.Data.MaterialItems.RemoveAll(item => item.ItemId is 101 or 102);
+                inventory.Data.MaterialItems.AddRange(new[] { new ItemData { ItemId = 101, Count = 500 },
+                    new ItemData { ItemId = 102, Count = 500 } });
+                foreach (var currentBanner in active)
+                foreach (var count in new[] { 1, 10 })
+                {
+                    var balances = inventory.Data.MaterialItems.ToDictionary(item => item.ItemId, item => item.Count);
+                    var equipmentBefore = inventory.Data.EquipmentItems.Count;
+                    var avatarsBefore = avatars.Data.FormalAvatars.Count;
+                    var response = (await catalogManager.DoGacha(currentBanner.GachaId, count))!;
+                    check(response.Retcode == 0 && response.GachaItemList.Count == count,
+                        "loaded catalog supports single and ten draws");
+                    var expected = new Dictionary<int, int>();
+                    var cost = currentBanner.GachaType == GachaTypeEnum.Newbie && count == 10 ? 8 : count;
+                    expected[currentBanner.GachaType.GetCostItemId()] = -cost;
+                    foreach (var item in response.GachaItemList.SelectMany(item =>
+                        item.TokenItem.ItemList_.Concat(item.TransferItemList.ItemList_)))
+                        expected[(int)item.ItemId] = expected.GetValueOrDefault((int)item.ItemId) + (int)item.Num;
+                    foreach (var id in balances.Keys.Concat(inventory.Data.MaterialItems.Select(item => item.ItemId)).Distinct())
+                        check((inventory.GetItem(id)?.Count ?? 0) - balances.GetValueOrDefault(id) == expected.GetValueOrDefault(id),
+                            "loaded reward material delta matches response including duplicates within ten draws");
+                    check(inventory.Data.EquipmentItems.Count - equipmentBefore == response.GachaItemList.Count(item =>
+                            GameData.ItemConfigData[(int)item.GachaItem_.ItemId].ItemMainType == ItemMainTypeEnum.Equipment),
+                        "loaded equipment delta matches response");
+                    check(avatars.Data.FormalAvatars.Count - avatarsBefore == response.GachaItemList.Count(item => item.IsNew),
+                        "loaded avatar delta matches response");
+                }
+                Console.WriteLine($"Resource compatibility: {catalogPage.GachaInfoList.Count} banners, {catalogPage.AKMDBPNEHDE.Count} selections");
+            }
         }
         finally
         {

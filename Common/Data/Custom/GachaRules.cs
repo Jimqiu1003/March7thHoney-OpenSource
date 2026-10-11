@@ -17,6 +17,18 @@ public sealed class GachaRules(BannerConfig banner, Random? randomSource = null)
         return (item, next);
     }
 
+    public (List<int> Items, GachaData NextState) EvaluateBatch(int times, List<int> selected,
+        List<int> goldAvatars, List<int> purpleAvatars, List<int> purpleWeapons, List<int> goldWeapons,
+        List<int> blueWeapons, GachaData current)
+    {
+        if (times is not (1 or 10)) throw new ArgumentOutOfRangeException(nameof(times));
+        var next = CloneState(current);
+        var items = new List<int>(times);
+        for (var index = 0; index < times; index++)
+            items.Add(Draw(selected, goldAvatars, purpleAvatars, purpleWeapons, goldWeapons, blueWeapons, next));
+        return (items, next);
+    }
+
     internal int Draw(List<int> characterEventNonFeaturedPool, List<int> standardGoldAvatars,
         List<int> purpleAvatars, List<int> purpleWeapons, List<int> standardGoldWeapons,
         List<int> blueWeapons, GachaData data)

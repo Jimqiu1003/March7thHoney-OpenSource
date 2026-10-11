@@ -1,4 +1,4 @@
-# Gacha rewrite: behavior preserved, display fix pending
+# Gacha rewrite: complete catalog and settlement candidate
 
 Baseline: `fe00bdbda3c28ca33d01f171566aa35b5ab95083`, branch `4.6`.
 Display investigation target: `CNPRODWin4.6.0 / 16566615_V4.6Live`.
@@ -10,7 +10,12 @@ Display investigation target: `CNPRODWin4.6.0 / 16566615_V4.6Live`.
 - `GachaRewards` centralizes duplicate conversion. A confirmed null-count bug is corrected in both the response and avatar-card inventory helper: a rank-six avatar with no held rank-up material must receive the maximum duplicate conversion, without an extra rank-up material.
 - `GachaProtocol` centralizes banner and draw response construction. No unknown field is assigned a guessed meaning; no protocol definitions or generated messages have been changed.
 
-Rejected expired/unknown pools, insufficient inventory capacity and invalid featured-resource IDs are intentional validation changes. Save schema, history, existing pity-family keys, probabilities and newbie cost remain unchanged. Failed database batches retain the existing rollback and retry behavior. The existing periodic-save window and unexpected failures during inventory application remain limitations; this is not a new durable transaction system.
+- Page initialization now includes the selection structure already used by the existing selection-set response, once per active avatar event/collaboration banner. Both use the same projection. This is a compatibility candidate, not proof that the target client parses that structure correctly.
+- Page and draw paths share candidate validation. Duplicate banner IDs and missing reachable reward definitions are rejected before charging. The old invalid-result-to-three-star replacement is removed. Existing `RateUpItems4` files contain five-star preview entries: the serialized configuration is retained, the draw rules keep their rarity filtering, and the page's four-star list now contains only actual four-star candidates.
+- Ten pulls clone pity state once, then advance the staged state in sequence. Selection mutations and page reads share the draw gate. The network handler uses the asynchronous selection entrypoint; the original synchronous entrypoint remains available for existing callers.
+- An exception after settlement begins blocks further draws/selection changes for that cached player state, including managers recreated on reconnect. It logs only the exception type. Inventory-sync failure after successful rewards does not roll back or re-execute the draw; reconnect refreshes inventory.
+
+Rejected expired/unknown pools, insufficient inventory capacity and invalid resource IDs are intentional validation changes. Save schema, history, existing pity-family keys, probabilities and newbie cost remain unchanged. Failed database batches retain the existing rollback and retry behavior. Settlement quarantine is process-local; restarting does not repair a partial settlement. An operator must reconcile affected inventory/history/pity before allowing further draws. The existing periodic-save window remains; this is not a durable transaction system.
 
 ## Checks
 
@@ -23,9 +28,11 @@ The dependency-free assertion runner compares 24,000 seeded draws against a froz
 
 The frozen test oracle must not be modernized with production code. No new package is required.
 
+An optional single argument points to a read-only `Resource.bin` fixture; the runner also reads `Custom/Banners.json` beside that cache. All players and databases remain synthetic. This checks the actual catalog and one/ten draws for every active banner, including response-to-inventory material, avatar and equipment deltas. Do not commit local resource caches. Page assertions cover selection consistency and four-star filtering rather than requiring the whole initialization response to remain byte-identical. Batch item/state parity and quarantine after an injected settlement failure are covered.
+
 ## Display issue and release gate
 
-[Issue #4](https://github.com/Mar7thLover/March7thHoney-OpenSource/issues/4) remains unresolved. Captured server timings and successful draws do not prove correct client parsing or display. A previously captured Lua nil-index category had no usable function stack. The rewrite deliberately preserves the old banner wire bytes while reliable mapping/resource evidence is unavailable.
+[Issue #4](https://github.com/Mar7thLover/March7thHoney-OpenSource/issues/4) remains unresolved until native-client acceptance. Captured server timings and successful draws do not prove correct client parsing or display. A previously captured Lua nil-index category had no usable function stack. This candidate completes initialization using existing repository structures and resource metadata; it does not assign meanings to unknown fields or claim a proven display root cause.
 
 A ready PR claiming the display fix requires live-client acceptance of standard, event and collaboration banners, correct ticket/discount display, single and ten-draw results, insufficient-ticket rejection, inventory correspondence and persistence after reconnect. A protocol patch additionally requires verified target-build mapping or a trustworthy response sample; a resource patch requires a located same-version file. Until those gates pass, retain the local branch without claiming the UI is repaired.
 

@@ -62,12 +62,23 @@ foreach (var seed in Enumerable.Range(1, 20))
         frozen.BeginTime = banner.BeginTime = 123;
         frozen.EndTime = banner.EndTime = 321;
         Check(frozen.ToInfo([101], [101], 17, 50).ToByteArray().SequenceEqual(
-            banner.ToInfo([101], [101], 17, 50).ToByteArray()), "page wire bytes unchanged until mapping is proven");
+            banner.ToInfo([101], [101], 17, 50).ToByteArray()), "existing banner fields retain wire mapping");
     }
     LegacyBannerConfig.RandomSource = new Random(seed);
     var rules = new GachaRules(banner, new Random(seed));
     var oldState = new GachaData();
     var newState = new GachaData();
+    var batchRules = new GachaRules(banner, new Random(seed));
+    var batchState = new GachaData();
+    var batchItems = new Queue<int>();
+    for (var batch = 0; batch < 20; batch++)
+    {
+        var unchangedBatch = JsonConvert.SerializeObject(batchState);
+        var planned = batchRules.EvaluateBatch(10, [101], [101], [301], [401], [201], [501], batchState);
+        foreach (var item in planned.Items) batchItems.Enqueue(item);
+        Check(unchangedBatch == JsonConvert.SerializeObject(batchState), "batch planning leaves input unchanged");
+        GachaRules.ApplyState(batchState, planned.NextState);
+    }
     for (var draw = 0; draw < 200; draw++)
     {
         var unchanged = JsonConvert.SerializeObject(newState);
@@ -75,9 +86,11 @@ foreach (var seed in Enumerable.Range(1, 20))
         var actual = rules.Evaluate([101], [101], [301], [401], [201], [501], newState);
         Check(unchanged == JsonConvert.SerializeObject(newState), "planning cannot mutate live state");
         Check(expected == actual.ItemId, $"{type}: seeded item parity");
+        Check(expected == batchItems.Dequeue(), $"{type}: seeded batch item parity");
         GachaRules.ApplyState(newState, actual.NextState);
         Check(JsonConvert.SerializeObject(oldState) == JsonConvert.SerializeObject(newState), $"{type}: seeded pity parity");
     }
+    Check(JsonConvert.SerializeObject(batchState) == JsonConvert.SerializeObject(newState), "batch and sequential pity parity");
 }
 Check(GachaRewards.GetConversion(3, false, false, 0, 0) == (20, 0, false), "three-star dust");
 Check(GachaRewards.GetConversion(5, false, false, 0, 0) == (0, 20, false), "five-star weapon");
@@ -89,5 +102,5 @@ foreach (var rarity in new[] { 4, 5 })
     Check(GachaRewards.GetConversion(rarity, true, true, 6, 0) == (0, rarity == 5 ? 100 : 20, false), "max rank without rank-up item");
     Check(!GachaRewards.GetConversion(rarity, true, true, 3, 3).RankUp, "held rank-up items count");
 }
-await IntegrationChecks.Run(Check);
+await IntegrationChecks.Run(Check, args.Length == 1 ? args[0] : null);
 Console.WriteLine($"PASS {checks} rule, conversion, request and persistence checks");
