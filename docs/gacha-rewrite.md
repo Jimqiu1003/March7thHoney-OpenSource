@@ -43,6 +43,14 @@ This is a confirmed collaboration initialization failure with a targeted candida
 
 Native feedback on 2026-10-12: the operator confirms that draws work and animation is restored, with unspecified details still needing adjustment. Commit `88326def0268c693c5487418fb4c25c7448badbf` is retained as the local `checkpoint/gacha-r5-playable-20261012` anchor. This is partial native acceptance: per-pool detail, selection, inventory correspondence and persistence were not individually confirmed in this feedback. Keep the working anchor while refining the remaining details; the formal PR gate is still open.
 
+### Event preview candidate after the r5 anchor
+
+The operator's r5 screenshot shows empty four-star portraits and Lynx's name/element/stars beside a different featured avatar. Target static Lua binds names, damage types and stars from `PrizeItemDatas`; `DefaultGachaUpAvatarPanel._init_imgs` loads images from `DetailItemDatas` filtered to `ItemRarity.VeryRare` (four-star). The first configured four-star ID is Lynx (`1110`), matching the wrong metadata in the screenshot. A read-only live-property probe could not run because the local server/client were stopped; no runtime mapping capture was obtained.
+
+The candidate event projection uses existing wire tag 5 for ordered featured-first metadata, followed by distinct four-star items, and existing tag 10 for distinct four-star image inputs. This collection mapping is inferred from the target Lua and observed r5 display; native acceptance is still required, and the repository's field names are not treated as authoritative client semantics. Normal/newbie projections and the existing regular-event marker are unchanged. No new unknown scalar flag, generated protocol change, probability change or client asset patch is included.
+
+Regression coverage checks featured-avatar changes, three distinct four-star image inputs, serialized ordering, unmodified draw configuration, and every configured event/collaboration preview. Keep the r5 anchor and latest database when rolling back this candidate. Do not claim the remaining display details fixed or create the formal PR until native verification passes.
+
 A ready PR claiming the display fix requires live-client acceptance of standard, event and collaboration banners, correct ticket/discount display, single and ten-draw results, insufficient-ticket rejection, inventory correspondence and persistence after reconnect. A protocol patch additionally requires verified target-build mapping or a trustworthy response sample; a resource patch requires a located same-version file. Until those gates pass, retain the local branch without claiming the UI is repaired.
 
 ## Reference provenance

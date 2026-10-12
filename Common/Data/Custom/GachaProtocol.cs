@@ -13,12 +13,17 @@ public static class GachaProtocol
     public static GachaInfo BuildInfo(BannerConfig banner, List<int> decideOrder, List<int> goldAvatar,
         int gachaPullCount = 0, int gachaPullLimit = 0, IEnumerable<int>? fourStarItems = null)
     {
+        var fourStarPreview = (fourStarItems ?? banner.RateUpItems4).Select(id => (uint)id).ToArray();
+        var featured = banner.RateUpItems5.Select(id => (uint)id).ToArray();
+        var eventPreview = banner.GachaType is GachaTypeEnum.AvatarUp or GachaTypeEnum.WeaponUp or
+            GachaTypeEnum.CollaborationAvatarUp or GachaTypeEnum.CollaborationWeaponUp;
         var info = new GachaInfo
         {
             GachaId = (uint)banner.GachaId, BeginTime = banner.BeginTime, EndTime = banner.EndTime,
             DetailUrl = "", HistoryUrl = "",
-            PrizeItemList = { banner.RateUpItems5.Select(id => (uint)id) },
-            ONIHOMCELJK = { (fourStarItems ?? banner.RateUpItems4).Select(id => (uint)id) }
+            // Candidate CN live projection: detail pictures are four-star; metadata is featured-first.
+            PrizeItemList = { eventPreview ? fourStarPreview.Distinct() : featured },
+            ONIHOMCELJK = { eventPreview ? featured.Concat(fourStarPreview).Distinct() : fourStarPreview }
         };
         if (banner.GachaType == GachaTypeEnum.Normal)
             info.GachaCeiling = new GachaCeiling

@@ -68,8 +68,11 @@ foreach (var seed in Enumerable.Range(1, 20))
             "ceiling follows banner kind rather than magic id");
         Check(projected.ItemDetailList.SequenceEqual(type == GachaTypeEnum.AvatarUp ? new uint[] { 11 } : []),
             "collaboration banner does not inherit regular event marker");
-        Check(projected.PrizeItemList.SequenceEqual(new uint[] { 999 }) && projected.ONIHOMCELJK.SequenceEqual(new uint[] { 301, 401 }),
-            "featured item projection retains known mapping");
+        var eventPreview = type is GachaTypeEnum.AvatarUp or GachaTypeEnum.WeaponUp or
+            GachaTypeEnum.CollaborationAvatarUp or GachaTypeEnum.CollaborationWeaponUp;
+        Check(projected.PrizeItemList.SequenceEqual(eventPreview ? new uint[] { 301, 401 } : new uint[] { 999 }) &&
+            projected.ONIHOMCELJK.SequenceEqual(eventPreview ? new uint[] { 999, 301, 401 } : new uint[] { 301, 401 }),
+            "event metadata is featured-first and detail previews are four-star; other pools retain projection");
     }
     LegacyBannerConfig.RandomSource = new Random(seed);
     var rules = new GachaRules(banner, new Random(seed));
@@ -98,6 +101,20 @@ foreach (var seed in Enumerable.Range(1, 20))
         Check(JsonConvert.SerializeObject(oldState) == JsonConvert.SerializeObject(newState), $"{type}: seeded pity parity");
     }
     Check(JsonConvert.SerializeObject(batchState) == JsonConvert.SerializeObject(newState), "batch and sequential pity parity");
+}
+foreach (var featured in new[] { 1505, 1403 })
+{
+    var banner = new BannerConfig { GachaId = 2120, GachaType = GachaTypeEnum.AvatarUp,
+        RateUpItems5 = [featured], RateUpItems4 = [1110, 1206, 1210, featured] };
+    var original = JsonConvert.SerializeObject(banner);
+    var info = GachaProtocol.BuildInfo(banner, [], [], fourStarItems: [1110, 1206, 1210, 1110]);
+    Check(info.ONIHOMCELJK.SequenceEqual(new uint[] { (uint)featured, 1110, 1206, 1210 }),
+        "switching featured avatar changes first name/damage/star metadata instead of keeping Lynx");
+    Check(info.PrizeItemList.SequenceEqual(new uint[] { 1110, 1206, 1210 }), "three four-star image inputs, no duplicate nodes");
+    var wire = March7thHoney.Proto.GachaInfo.Parser.ParseFrom(info.ToByteArray());
+    Check(wire.ONIHOMCELJK.SequenceEqual(info.ONIHOMCELJK) && wire.PrizeItemList.SequenceEqual(info.PrizeItemList),
+        "preview order survives protocol serialization");
+    Check(JsonConvert.SerializeObject(banner) == original, "display projection does not change rate-up draw configuration");
 }
 Check(GachaRewards.GetConversion(3, false, false, 0, 0) == (20, 0, false), "three-star dust");
 Check(GachaRewards.GetConversion(5, false, false, 0, 0) == (0, 20, false), "five-star weapon");

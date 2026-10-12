@@ -244,8 +244,18 @@ internal static class IntegrationChecks
                 var active = GameData.BannersConfig.Banners.Where(b => b.IsActiveAt(now)).ToList();
                 var catalogPage = catalogManager.ToProto();
                 check(catalogPage.GachaInfoList.Count == active.Count, "loaded resource cache has complete supported catalog");
-                check(catalogPage.GachaInfoList.All(info => info.ONIHOMCELJK.All(id => catalogManager.GetRarity((int)id) == 4)),
-                    "four-star page list excludes legacy five-star preview entries");
+                foreach (var current in active)
+                {
+                    var info = catalogPage.GachaInfoList.Single(info => info.GachaId == current.GachaId);
+                    var eventPreview = current.GachaType is GachaTypeEnum.AvatarUp or GachaTypeEnum.WeaponUp or
+                        GachaTypeEnum.CollaborationAvatarUp or GachaTypeEnum.CollaborationWeaponUp;
+                    var fourStarPreview = eventPreview ? info.PrizeItemList : info.ONIHOMCELJK;
+                    check(fourStarPreview.All(id => catalogManager.GetRarity((int)id) == 4),
+                        "four-star image inputs exclude legacy five-star preview entries");
+                    if (eventPreview)
+                        check(info.ONIHOMCELJK.Take(current.RateUpItems5.Count).SequenceEqual(current.RateUpItems5.Select(id => (uint)id)),
+                            "every event and collaboration banner names its featured item first");
+                }
                 check(catalogPage.AKMDBPNEHDE.Count == active.Count(b => b.GachaType is
                     GachaTypeEnum.AvatarUp or GachaTypeEnum.CollaborationAvatarUp), "loaded catalog selection coverage");
                 // Target client group 31 has two fixed subgroups, not an arbitrary list of active banners.
