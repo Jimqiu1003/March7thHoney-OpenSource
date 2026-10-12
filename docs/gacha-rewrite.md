@@ -41,6 +41,8 @@ The default configuration now supplies all eight members using the existing coll
 
 This is a confirmed collaboration initialization failure with a targeted candidate correction. Later standard-pool and cutscene failures may follow that aborted initialization, but their recovery is not yet verified. Native acceptance must still check those symptoms independently.
 
+Native feedback on 2026-10-12: the operator confirms that draws work and animation is restored, with unspecified details still needing adjustment. Commit `88326def0268c693c5487418fb4c25c7448badbf` is retained as the local `checkpoint/gacha-r5-playable-20261012` anchor. This is partial native acceptance: per-pool detail, selection, inventory correspondence and persistence were not individually confirmed in this feedback. Keep the working anchor while refining the remaining details; the formal PR gate is still open.
+
 A ready PR claiming the display fix requires live-client acceptance of standard, event and collaboration banners, correct ticket/discount display, single and ten-draw results, insufficient-ticket rejection, inventory correspondence and persistence after reconnect. A protocol patch additionally requires verified target-build mapping or a trustworthy response sample; a resource patch requires a located same-version file. Until those gates pass, retain the local branch without claiming the UI is repaired.
 
 ## Reference provenance
